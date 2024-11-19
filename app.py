@@ -13,7 +13,7 @@ app.config['SECRET_KEY'] = 'your-secret-key-here'  # Will be replaced with envir
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///referrals.db'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'tif', 'tiff'}
 
 # Initialize SQLAlchemy
 db = SQLAlchemy(app)
@@ -27,41 +27,62 @@ model = None
 processor = None
 
 def initialize_model():
+    """Initialize the AI model for image analysis"""
     global model, processor
     try:
+        print("Loading AI model...")
         model = AutoModelForImageClassification.from_pretrained(model_id)
         processor = AutoFeatureExtractor.from_pretrained(model_id)
+        
+        # Verify model initialization
+        if model is None or processor is None:
+            raise RuntimeError("Failed to initialize AI model components")
+            
+        print("AI model loaded successfully")
+        return True
     except Exception as e:
-        print(f"Error initializing model: {str(e)}")
-        pass
+        print(f"Error initializing AI model: {str(e)}")
+        return False
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def analyze_image(image_path):
-    """Prototype function to analyze images"""
+    """Prototype function to analyze images for glaucoma screening"""
     try:
+        # Load and preprocess image
         image = Image.open(image_path).convert('RGB')
+        if not processor or not model:
+            raise Exception("Model not initialized")
+            
         inputs = processor(images=image, return_tensors="pt")
         
         with torch.no_grad():
             outputs = model(**inputs)
             
-        # For prototype, we'll use a simple logic
+        # For prototype, we'll use confidence scores to determine urgency
         # In production, this would be replaced with proper medical image analysis
-        score = torch.nn.functional.softmax(outputs.logits, dim=1)[0][0].item()
+        confidence = torch.nn.functional.softmax(outputs.logits, dim=1)[0][0].item()
+        
+        # Analyze image features for potential indicators
+        is_urgent = confidence > 0.7
+        needs_comprehensive = confidence > 0.6
+        needs_field_test = confidence > 0.5
         
         return {
-            'urgency': 'urgent' if score > 0.7 else 'routine',
-            'appointment_type': 'comprehensive' if score > 0.7 else 'standard',
-            'field_test_required': score > 0.5
+            'urgency': 'urgent' if is_urgent else 'routine',
+            'appointment_type': 'comprehensive' if needs_comprehensive else 'standard',
+            'field_test_required': needs_field_test,
+            'confidence': confidence
         }
     except Exception as e:
         print(f"Error analyzing image: {str(e)}")
+        # Default to urgent in case of errors for patient safety
         return {
-            'urgency': 'urgent',  # Default to urgent in case of errors
+            'urgency': 'urgent',
             'appointment_type': 'comprehensive',
-            'field_test_required': True
+            'field_test_required': True,
+            'confidence': None
         }
 
 @app.route('/')
@@ -76,46 +97,81 @@ def dashboard():
 @app.route('/upload', methods=['GET', 'POST'])
 def upload():
     if request.method == 'POST':
+        # Check if the post request has the file part
         if 'referral' not in request.files:
-            flash('No file selected')
+            flash('No file part in the request', 'error')
             return redirect(request.url)
         
         file = request.files['referral']
+        
+        # Check if a file was actually selected
         if file.filename == '':
-            flash('No file selected')
+            flash('No file selected', 'error')
             return redirect(request.url)
         
-        if file and allowed_file(file.filename):
+        # Validate file type
+        if not allowed_file(file.filename):
+            flash('Invalid file type. Allowed types: ' + ', '.join(ALLOWED_EXTENSIONS), 'error')
+            return redirect(request.url)
+        
+        try:
+            if not file.filename or not isinstance(file.filename, str):
+                raise ValueError("Invalid filename")
+                
+            # Secure the filename and create save path
             filename = secure_filename(file.filename)
+            if not filename:
+                raise ValueError("Invalid filename after sanitization")
+                
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            
+            # Save the file
             file.save(filepath)
             
             # Analyze the uploaded file
             result = analyze_image(filepath)
             
             # Save to database
-            referral = Referral()
-            referral.filename = filename
-            referral.urgency = result['urgency']
-            referral.appointment_type = result['appointment_type']
-            referral.field_test_required = result['field_test_required']
+            referral = Referral(
+                filename=filename,
+                urgency=result['urgency'],
+                appointment_type=result['appointment_type'],
+                field_test_required=result['field_test_required']
+            )
             
             db.session.add(referral)
             db.session.commit()
             
-            flash('Referral processed successfully')
+            flash(f'Referral processed successfully. Urgency: {result["urgency"].title()}', 'success')
             return redirect(url_for('dashboard'))
             
-        flash('Invalid file type')
-        return redirect(request.url)
+        except ValueError as e:
+            flash(f'Invalid file: {str(e)}', 'error')
+            return redirect(request.url)
+        except Exception as e:
+            print(f"Error processing referral: {str(e)}")  # Log the error
+            flash('An error occurred while processing the referral', 'error')
+            return redirect(request.url)
     
     return render_template('upload.html')
 
-# Initialize database and model
+# Initialize application
 with app.app_context():
-    # Ensure upload directory exists
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    # Initialize model
-    initialize_model()
-    # Create database tables
-    db.create_all()
+    try:
+        # Ensure upload directory exists
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        print("Upload directory created/verified")
+        
+        # Create database tables
+        db.create_all()
+        print("Database tables created/verified")
+        
+        # Initialize AI model
+        if not initialize_model():
+            print("Warning: AI model initialization failed, system will use fallback analysis")
+        
+        print("Application initialization completed")
+    except Exception as e:
+        print(f"Error during application initialization: {str(e)}")
+        # The application will still run, but with limited functionality
+        print("Application will run with limited functionality")

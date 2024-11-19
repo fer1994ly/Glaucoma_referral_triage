@@ -16,4 +16,5 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pdfminer-six>=20240706",
     "werkzeug",
+    "python-poppler",
 ]
