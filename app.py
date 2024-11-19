@@ -1,49 +1,77 @@
-import os
-from flask import Flask, render_template, request, flash, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import DeclarativeBase
 from werkzeug.utils import secure_filename
+from datetime import datetime
+import os
+from transformers import AutoFeatureExtractor, AutoModelForImageClassification
 import torch
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
-from qwen_utils import analyze_referral
 from PIL import Image
-import numpy as np
 
-class Base(DeclarativeBase):
-    pass
-
-db = SQLAlchemy(model_class=Base)
+# Flask app configuration
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-here'  # Will be replaced with environment variable
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///referrals.db'
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
 
-# Configuration
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "glaucoma_triage_key"
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///glaucoma_triage.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["UPLOAD_FOLDER"] = "uploads"
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
+# Initialize SQLAlchemy
+db = SQLAlchemy(app)
 
-# Ensure upload directory exists
-os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+# Import models after db initialization
+from models import Referral
 
-# Initialize database
-db.init_app(app)
+# AI Model configuration
+model_id = "microsoft/resnet-50"  # Using a smaller model for the prototype
+model = None
+processor = None
 
-# Initialize a simple model for initial prototype
-from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
-model_id = "nlpconnect/vit-gpt2-image-captioning"
-model = VisionEncoderDecoderModel.from_pretrained(model_id)
-feature_extractor = ViTImageProcessor.from_pretrained(model_id)
-tokenizer = AutoTokenizer.from_pretrained(model_id)
+def initialize_model():
+    global model, processor
+    try:
+        model = AutoModelForImageClassification.from_pretrained(model_id)
+        processor = AutoFeatureExtractor.from_pretrained(model_id)
+    except Exception as e:
+        print(f"Error initializing model: {str(e)}")
+        pass
 
-# Move to CPU and set to evaluation mode
-device = torch.device("cpu")
-model.to(device)
-model.eval()
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Routes
+def analyze_image(image_path):
+    """Prototype function to analyze images"""
+    try:
+        image = Image.open(image_path).convert('RGB')
+        inputs = processor(images=image, return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+            
+        # For prototype, we'll use a simple logic
+        # In production, this would be replaced with proper medical image analysis
+        score = torch.nn.functional.softmax(outputs.logits, dim=1)[0][0].item()
+        
+        return {
+            'urgency': 'urgent' if score > 0.7 else 'routine',
+            'appointment_type': 'comprehensive' if score > 0.7 else 'standard',
+            'field_test_required': score > 0.5
+        }
+    except Exception as e:
+        print(f"Error analyzing image: {str(e)}")
+        return {
+            'urgency': 'urgent',  # Default to urgent in case of errors
+            'appointment_type': 'comprehensive',
+            'field_test_required': True
+        }
+
 @app.route('/')
 def index():
-    return render_template('dashboard.html')
+    return redirect(url_for('dashboard'))
+
+@app.route('/dashboard')
+def dashboard():
+    referrals = Referral.query.order_by(Referral.created_at.desc()).all()
+    return render_template('dashboard.html', referrals=referrals)
 
 @app.route('/upload', methods=['GET', 'POST'])
 def upload():
@@ -57,36 +85,37 @@ def upload():
             flash('No file selected')
             return redirect(request.url)
         
-        if file:
+        if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
             
-            # Process referral with AI model
-            result = analyze_referral(filepath, model, feature_extractor, tokenizer)
+            # Analyze the uploaded file
+            result = analyze_image(filepath)
             
             # Save to database
-            from models import Referral
-            referral = Referral(
-                filename=filename,
-                urgency=result['urgency'],
-                appointment_type=result['appointment_type'],
-                field_test_required=result['field_test_required']
-            )
+            referral = Referral()
+            referral.filename = filename
+            referral.urgency = result['urgency']
+            referral.appointment_type = result['appointment_type']
+            referral.field_test_required = result['field_test_required']
+            
             db.session.add(referral)
             db.session.commit()
             
             flash('Referral processed successfully')
             return redirect(url_for('dashboard'))
+            
+        flash('Invalid file type')
+        return redirect(request.url)
     
     return render_template('upload.html')
 
-@app.route('/dashboard')
-def dashboard():
-    from models import Referral
-    referrals = Referral.query.order_by(Referral.created_at.desc()).all()
-    return render_template('dashboard.html', referrals=referrals)
-
+# Initialize database and model
 with app.app_context():
-    import models
+    # Ensure upload directory exists
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    # Initialize model
+    initialize_model()
+    # Create database tables
     db.create_all()
