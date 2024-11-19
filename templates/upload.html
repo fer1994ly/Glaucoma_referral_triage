@@ -31,10 +31,15 @@
                         </div>
                         
                         <div class="text-center">
-                            <button type="submit" class="btn btn-primary btn-lg">
+                            <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">
                                 <i class="fas fa-upload me-2"></i>
-                                Process Referral
+                                <span class="button-text">Process Referral</span>
+                                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
                             </button>
+                        </div>
+                        <div id="processing-status" class="alert alert-info mt-3 d-none">
+                            <i class="fas fa-spinner fa-spin me-2"></i>
+                            Analyzing referral document with AI...
                         </div>
                     </form>
                 </div>

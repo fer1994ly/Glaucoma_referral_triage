@@ -1,8 +1,11 @@
 :root {
-    --urgent-red: #dc3545;
-    --routine-green: #28a745;
-    --medical-blue: #007bff;
+    --urgent-red: #dc2626;
+    --routine-green: #15803d;
+    --medical-blue: #0369a1;
     --light-gray: #f8f9fa;
+    --text-dark: #111827;
+    --text-light: #ffffff;
+    --error-red: #b91c1c;
 }
 
 body {

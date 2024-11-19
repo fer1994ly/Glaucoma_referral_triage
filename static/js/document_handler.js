@@ -1,8 +1,11 @@
 document.addEventListener('DOMContentLoaded', function() {
     const uploadArea = document.querySelector('.upload-area');
     const fileInput = document.querySelector('#referral-input');
+    const form = document.querySelector('form');
+    const submitBtn = document.querySelector('#submit-btn');
+    const processingStatus = document.querySelector('#processing-status');
     
-    if (uploadArea && fileInput) {
+    if (uploadArea && fileInput && form) {
         // Drag and drop functionality
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -36,6 +39,20 @@ document.addEventListener('DOMContentLoaded', function() {
     function updateFileName(filename) {
         const fileNameDisplay = document.querySelector('.file-name');
         if (fileNameDisplay) {
+        // Form submission handler
+        form.addEventListener('submit', (e) => {
+            if (!fileInput.files.length) {
+                e.preventDefault();
+                alert('Please select a file first.');
+                return;
+            }
+            
+            // Show loading state
+            submitBtn.disabled = true;
+            submitBtn.querySelector('.button-text').classList.add('d-none');
+            submitBtn.querySelector('.spinner-border').classList.remove('d-none');
+            processingStatus.classList.remove('d-none');
+        });
             fileNameDisplay.textContent = filename;
         }
     }

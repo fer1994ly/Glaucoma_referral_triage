@@ -4,7 +4,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
 from werkzeug.utils import secure_filename
 import torch
-from transformers import AutoFeatureExtractor, ResNetForImageClassification
+from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
 from qwen_utils import analyze_referral
 from PIL import Image
 import numpy as np
@@ -28,12 +28,17 @@ os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 # Initialize database
 db.init_app(app)
 
-# Initialize ResNet model for image analysis
-from transformers import AutoFeatureExtractor, ResNetForImageClassification
-model_id = "microsoft/resnet-50"
-feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
-model = ResNetForImageClassification.from_pretrained(model_id)
-model.eval()  # Set to evaluation mode
+# Initialize a simple model for initial prototype
+from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
+model_id = "nlpconnect/vit-gpt2-image-captioning"
+model = VisionEncoderDecoderModel.from_pretrained(model_id)
+feature_extractor = ViTImageProcessor.from_pretrained(model_id)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+# Move to CPU and set to evaluation mode
+device = torch.device("cpu")
+model.to(device)
+model.eval()
 
 # Routes
 @app.route('/')
@@ -58,7 +63,7 @@ def upload():
             file.save(filepath)
             
             # Process referral with AI model
-            result = analyze_referral(filepath, model, feature_extractor)
+            result = analyze_referral(filepath, model, feature_extractor, tokenizer)
             
             # Save to database
             from models import Referral
