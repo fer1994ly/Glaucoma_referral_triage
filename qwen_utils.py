@@ -41,26 +41,25 @@ def extract_numerical_values(text):
     }
     return image_inputs, video_inputs
 
-def analyze_referral(filepath, model, feature_extractor, tokenizer):
+def analyze_referral(filepath, model, processor):
     """Analyze referral document using Qwen2-VL model for medical document analysis"""
     try:
-        # Handle PDF files
-        if filepath.lower().endswith('.pdf'):
-            images = convert_pdf_to_images(filepath)
-            if not images:
-                raise Exception("Failed to process PDF document")
-            image = images[0]  # Process first page for prototype
-        else:
-            image = Image.open(filepath).convert("RGB")
-
-        pixel_values = feature_extractor(images=image, return_tensors="pt").pixel_values
+        image = Image.open(filepath).convert("RGB")
         
-        # Generate detailed analysis using Qwen2-VL model
-        prompt = """Please analyze this medical document and describe:
-        1. Eye pressure measurements
-        2. Cup-to-disc ratio
-        3. Visual field test results
-        4. Any signs of glaucoma damage"""
+        # Prepare the medical analysis prompt
+        prompt = """Analyze this medical eye exam image and provide details about:
+        1. Intraocular pressure (IOP) measurements in mmHg
+        2. Cup-to-disc ratio assessment
+        3. Visual field test results and any defects
+        4. Signs of glaucomatous damage
+        5. Overall assessment of glaucoma risk"""
+
+        # Process image and text for the model
+        inputs = processor(
+            images=image,
+            text=prompt,
+            return_tensors="pt"
+        ).to("cuda" if torch.cuda.is_available() else "cpu")
         
         with torch.no_grad():
             output_ids = model.generate(

@@ -1,5 +1,15 @@
 {pkgs}: {
   deps = [
+    pkgs.rustc
+    pkgs.libiconv
+    pkgs.cargo
+    pkgs.xcbuild
+    pkgs.swig
+    pkgs.mupdf
+    pkgs.libjpeg_turbo
+    pkgs.jbig2dec
+    pkgs.harfbuzz
+    pkgs.gumbo
     pkgs.poppler_utils
     pkgs.poppler
     pkgs.zlib

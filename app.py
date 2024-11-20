@@ -27,11 +27,17 @@ model = None
 processor = None
 
 def initialize_model():
-    """Initialize the AI model for image analysis"""
+    """Initialize the model for medical image analysis"""
     global model, processor
     try:
         print("Loading AI model...")
-        model = AutoModelForImageClassification.from_pretrained(model_id)
+        from transformers import AutoModelForImageClassification, AutoFeatureExtractor
+        
+        model = AutoModelForImageClassification.from_pretrained(
+            model_id,
+            num_labels=2,  # binary classification: urgent vs routine
+            ignore_mismatched_sizes=True
+        )
         processor = AutoFeatureExtractor.from_pretrained(model_id)
         
         # Verify model initialization
@@ -48,23 +54,22 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def analyze_image(image_path):
-    """Prototype function to analyze images for glaucoma screening"""
+    """Basic image analysis for the prototype"""
     try:
-        # Load and preprocess image
-        image = Image.open(image_path).convert('RGB')
         if not processor or not model:
             raise Exception("Model not initialized")
             
+        # Load and preprocess image
+        image = Image.open(image_path).convert('RGB')
         inputs = processor(images=image, return_tensors="pt")
         
+        # Get model prediction
         with torch.no_grad():
             outputs = model(**inputs)
-            
-        # For prototype, we'll use confidence scores to determine urgency
-        # In production, this would be replaced with proper medical image analysis
-        confidence = torch.nn.functional.softmax(outputs.logits, dim=1)[0][0].item()
+            probs = torch.nn.functional.softmax(outputs.logits, dim=1)
+            confidence = probs[0][0].item()  # Confidence score for urgent class
         
-        # Analyze image features for potential indicators
+        # For prototype: Use confidence thresholds to determine urgency
         is_urgent = confidence > 0.7
         needs_comprehensive = confidence > 0.6
         needs_field_test = confidence > 0.5
