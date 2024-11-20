@@ -11,10 +11,17 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True  # Handle truncated images gracefully
 
 # Flask app configuration
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # Will be replaced with environment variable
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///referrals.db'
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config.update(
+    SECRET_KEY=os.environ.get('SECRET_KEY', 'development-key-only'),
+    SQLALCHEMY_DATABASE_URI=os.environ.get('DATABASE_URL', 'sqlite:///referrals.db'),
+    UPLOAD_FOLDER=os.path.join(os.getcwd(), 'uploads'),
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB max file size
+)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+# Ensure upload directory exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'tif', 'tiff'}
 
 # Initialize SQLAlchemy
@@ -279,23 +286,36 @@ def upload():
     
     return render_template('upload.html')
 
-# Initialize application
-with app.app_context():
-    try:
-        # Ensure upload directory exists
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        print("Upload directory created/verified")
-        
-        # Create database tables
-        db.create_all()
-        print("Database tables created/verified")
-        
-        # Initialize AI model
-        if not initialize_model():
-            print("Warning: AI model initialization failed, system will use fallback analysis")
-        
-        print("Application initialization completed")
-    except Exception as e:
-        print(f"Error during application initialization: {str(e)}")
-        # The application will still run, but with limited functionality
-        print("Application will run with limited functionality")
+# Initialize application components
+def init_app():
+    with app.app_context():
+        try:
+            # Configure app for production
+            app.config.update(
+                ENV='production',
+                DEBUG=False,
+                PREFERRED_URL_SCHEME='https'
+            )
+            
+            # Ensure upload directory exists
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            logger.info("Upload directory created/verified")
+            
+            # Create database tables
+            db.create_all()
+            logger.info("Database tables created/verified")
+            
+            # Initialize AI model
+            if not initialize_model():
+                logger.warning("AI model initialization failed, system will use fallback analysis")
+            
+            logger.info("Application initialization completed")
+            return True
+        except Exception as e:
+            logger.error(f"Error during application initialization: {str(e)}")
+            # The application will still run, but with limited functionality
+            logger.warning("Application will run with limited functionality")
+            return False
+
+# Initialize app when imported
+init_app()
