@@ -59,25 +59,47 @@ def analyze_image(image_path):
         if not processor or not model:
             raise Exception("Model not initialized")
             
-        # Open image and handle multi-page TIFF
-        with Image.open(image_path) as img:
-            # Log image information
-            print(f"Processing image: {image_path}")
-            print(f"Format: {img.format}")
-            print(f"Mode: {img.mode}")
-            print(f"Size: {img.size}")
-            
-            # Handle multi-page TIFF
-            if hasattr(img, 'n_frames') and img.n_frames > 1:
-                print(f"Multi-page TIFF detected with {img.n_frames} frames")
-                # Process first frame for prototype
-                img.seek(0)
-            
-            # Convert to RGB while preserving image quality
+        # Log start of image processing
+        print(f"Starting analysis of: {image_path}")
+        
+        # Open image with careful error handling
+        try:
+            img = Image.open(image_path)
+        except OSError as e:
+            print(f"Error opening image file: {str(e)}")
+            if "truncated" in str(e).lower():
+                raise OSError("Truncated or corrupted TIFF file")
+            elif "compression" in str(e).lower():
+                raise OSError("Unsupported TIFF compression")
+            else:
+                raise OSError(f"Error opening image: {str(e)}")
+
+        # Log image details
+        print(f"Image Format: {img.format}")
+        print(f"Image Mode: {img.mode}")
+        print(f"Image Size: {img.size}")
+        print(f"Bits per pixel: {img.bits if hasattr(img, 'bits') else 'Unknown'}")
+        
+        # Handle multi-page TIFF
+        n_frames = getattr(img, 'n_frames', 1)
+        if n_frames > 1:
+            print(f"Multi-page TIFF detected with {n_frames} frames")
+            print("Processing first frame for prototype")
+            img.seek(0)
+        
+        # Convert image to RGB with proper bit depth handling
+        try:
             if img.mode in ['I;16', 'I']:
-                # Handle 16-bit images
+                print("Converting 16-bit image to 8-bit")
                 img = img.point(lambda i: i * (1/256)).convert('L')
+            elif img.mode == 'RGBA':
+                print("Converting RGBA to RGB")
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            
             image = img.convert('RGB')
+            print("Image successfully converted to RGB mode")
             
             # Preprocess image
             inputs = processor(images=image, return_tensors="pt")
@@ -92,13 +114,16 @@ def analyze_image(image_path):
             is_urgent = confidence > 0.7
             needs_comprehensive = confidence > 0.6
             needs_field_test = confidence > 0.5
-        
-        return {
-            'urgency': 'urgent' if is_urgent else 'routine',
-            'appointment_type': 'comprehensive' if needs_comprehensive else 'standard',
-            'field_test_required': needs_field_test,
-            'confidence': confidence
-        }
+            
+            return {
+                'urgency': 'urgent' if is_urgent else 'routine',
+                'appointment_type': 'comprehensive' if needs_comprehensive else 'standard',
+                'field_test_required': needs_field_test,
+                'confidence': confidence
+            }
+        except Exception as e:
+            print(f"Error during image processing: {str(e)}")
+            raise  # Re-raise the exception to be caught by the outer try-except block
     except OSError as e:
         print(f"TIFF/Image file error: {str(e)}")
         if "truncated" in str(e).lower():
