@@ -19,6 +19,30 @@ app.config.update(
 )
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+# Request logging middleware
+class RequestLoggingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO', '')
+        method = environ.get('REQUEST_METHOD', '')
+        request_id = os.urandom(8).hex()
+        
+        logger.info(f"Request started - ID: {request_id} - Method: {method} - Path: {path}")
+        
+        def custom_start_response(status, headers, exc_info=None):
+            logger.info(f"Request completed - ID: {request_id} - Status: {status}")
+            return start_response(status, headers, exc_info)
+        
+        try:
+            return self.app(environ, custom_start_response)
+        except Exception as e:
+            logger.error(f"Request failed - ID: {request_id} - Error: {str(e)}", exc_info=True)
+            raise
+
+# Application readiness flag
+app_ready = False
 logger = logging.getLogger(__name__)
 # Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -288,6 +312,7 @@ def upload():
 
 # Initialize application components
 def init_app():
+    global app_ready
     with app.app_context():
         try:
             # Configure app for production
@@ -296,6 +321,10 @@ def init_app():
                 DEBUG=False,
                 PREFERRED_URL_SCHEME='https'
             )
+            
+            # Register middleware
+            app.wsgi_app = RequestLoggingMiddleware(app.wsgi_app)
+            logger.info("Request logging middleware registered")
             
             # Ensure upload directory exists
             os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -309,7 +338,9 @@ def init_app():
             if not initialize_model():
                 logger.warning("AI model initialization failed, system will use fallback analysis")
             
-            logger.info("Application initialization completed")
+            # Mark application as ready
+            app_ready = True
+            logger.info("Application initialization completed successfully")
             return True
         except Exception as e:
             logger.error(f"Error during application initialization: {str(e)}")
