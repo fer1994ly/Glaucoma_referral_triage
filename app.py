@@ -5,7 +5,9 @@ from datetime import datetime
 import os
 from transformers import AutoFeatureExtractor, AutoModelForImageClassification
 import torch
-from PIL import Image
+from PIL import Image, ImageFile, TiffImagePlugin
+import logging
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # Handle truncated images gracefully
 
 # Flask app configuration
 app = Flask(__name__)
@@ -54,7 +56,7 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def analyze_image(image_path):
-    """Analyze medical images including TIFF files for the prototype"""
+    """Analyze medical images with enhanced TIFF support for the prototype"""
     try:
         if not processor or not model:
             raise Exception("Model not initialized")
@@ -62,15 +64,42 @@ def analyze_image(image_path):
         # Log start of image processing
         print(f"Starting analysis of: {image_path}")
         
-        # Open image with careful error handling
+        # Open image with enhanced TIFF handling
         try:
             img = Image.open(image_path)
+            
+            # Get detailed image information
+            img_info = {
+                'format': img.format,
+                'mode': img.mode,
+                'size': img.size,
+                'bits': getattr(img, 'bits', None),
+            }
+            
+            if img.format == 'TIFF':
+                print("TIFF file detected, gathering TIFF-specific information...")
+                # Get TIFF-specific tags
+                tags = {
+                    tag: img.tag[tag] for tag in img.tag.keys()
+                    if tag in [256, 257, 258, 259]  # Width, Height, BitsPerSample, Compression
+                }
+                print(f"TIFF Tags: {tags}")
+                
+                # Check compression
+                compression = tags.get(259, [1])[0]  # Default to uncompressed
+                if compression not in [1, 5, 7]:  # Uncompressed, LZW, JPEG
+                    raise OSError(f"Unsupported TIFF compression method: {compression}")
+                    
+                print(f"TIFF Compression: {compression}")
+                
+            print(f"Image Details: {img_info}")
+            
         except OSError as e:
             print(f"Error opening image file: {str(e)}")
             if "truncated" in str(e).lower():
-                raise OSError("Truncated or corrupted TIFF file")
+                raise OSError("Truncated or corrupted TIFF file. Please ensure the file is complete.")
             elif "compression" in str(e).lower():
-                raise OSError("Unsupported TIFF compression")
+                raise OSError("Unsupported TIFF compression. Please provide an uncompressed or LZW/JPEG compressed TIFF.")
             else:
                 raise OSError(f"Error opening image: {str(e)}")
 
@@ -87,18 +116,36 @@ def analyze_image(image_path):
             print("Processing first frame for prototype")
             img.seek(0)
         
-        # Convert image to RGB with proper bit depth handling
+        # Enhanced image conversion with proper bit depth handling
         try:
+            # Handle multi-page TIFF
+            if hasattr(img, 'n_frames') and img.n_frames > 1:
+                print(f"Multi-page TIFF detected with {img.n_frames} frames")
+                print("Processing first frame for prototype")
+                img.seek(0)
+            
+            # Convert based on image mode
             if img.mode in ['I;16', 'I']:
-                print("Converting 16-bit image to 8-bit")
-                img = img.point(lambda i: i * (1/256)).convert('L')
-            elif img.mode == 'RGBA':
-                print("Converting RGBA to RGB")
+                print(f"Converting {img.mode} (16-bit) image to 8-bit")
+                # Scale 16-bit to 8-bit while preserving relative values
+                img = img.point(lambda i: i * (255/65535)).convert('L')
+            elif img.mode in ['LA', 'PA']:
+                print(f"Converting {img.mode} to RGB with alpha")
+                img = img.convert('RGBA')
                 background = Image.new('RGB', img.size, (255, 255, 255))
                 background.paste(img, mask=img.split()[3])
                 img = background
+            elif img.mode == 'RGBA':
+                print("Converting RGBA to RGB with white background")
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            elif img.mode not in ['RGB', 'L']:
+                print(f"Converting {img.mode} to RGB")
+                img = img.convert('RGB')
             
-            image = img.convert('RGB')
+            # Final conversion to RGB if not already
+            image = img if img.mode == 'RGB' else img.convert('RGB')
             print("Image successfully converted to RGB mode")
             
             # Preprocess image
@@ -216,7 +263,18 @@ def upload():
             return redirect(request.url)
         except Exception as e:
             print(f"Error processing referral: {str(e)}")  # Log the error
-            flash('An error occurred while processing the referral', 'error')
+            error_msg = str(e)
+            if isinstance(e, OSError):
+                if "compression" in error_msg.lower():
+                    flash('Unsupported TIFF compression. Please provide an uncompressed or LZW/JPEG compressed TIFF.', 'error')
+                elif "truncated" in error_msg.lower():
+                    flash('The TIFF file appears to be incomplete or corrupted. Please check the file and try again.', 'error')
+                elif "bits" in error_msg.lower():
+                    flash('Unsupported bit depth in TIFF file. Please provide an 8-bit or 16-bit TIFF.', 'error')
+                else:
+                    flash(f'Error processing the TIFF file: {error_msg}', 'error')
+            else:
+                flash('An error occurred while processing the referral', 'error')
             return redirect(request.url)
     
     return render_template('upload.html')
