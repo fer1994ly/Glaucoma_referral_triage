@@ -17,6 +17,4 @@ dependencies = [
     "pdfminer-six>=20240706",
     "werkzeug",
     "python-poppler",
-    "spaces",
-    "gradio",
 ]
