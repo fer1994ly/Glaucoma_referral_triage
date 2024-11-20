@@ -54,31 +54,66 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def analyze_image(image_path):
-    """Basic image analysis for the prototype"""
+    """Analyze medical images including TIFF files for the prototype"""
     try:
         if not processor or not model:
             raise Exception("Model not initialized")
             
-        # Load and preprocess image
-        image = Image.open(image_path).convert('RGB')
-        inputs = processor(images=image, return_tensors="pt")
-        
-        # Get model prediction
-        with torch.no_grad():
-            outputs = model(**inputs)
-            probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-            confidence = probs[0][0].item()  # Confidence score for urgent class
-        
-        # For prototype: Use confidence thresholds to determine urgency
-        is_urgent = confidence > 0.7
-        needs_comprehensive = confidence > 0.6
-        needs_field_test = confidence > 0.5
+        # Open image and handle multi-page TIFF
+        with Image.open(image_path) as img:
+            # Log image information
+            print(f"Processing image: {image_path}")
+            print(f"Format: {img.format}")
+            print(f"Mode: {img.mode}")
+            print(f"Size: {img.size}")
+            
+            # Handle multi-page TIFF
+            if hasattr(img, 'n_frames') and img.n_frames > 1:
+                print(f"Multi-page TIFF detected with {img.n_frames} frames")
+                # Process first frame for prototype
+                img.seek(0)
+            
+            # Convert to RGB while preserving image quality
+            if img.mode in ['I;16', 'I']:
+                # Handle 16-bit images
+                img = img.point(lambda i: i * (1/256)).convert('L')
+            image = img.convert('RGB')
+            
+            # Preprocess image
+            inputs = processor(images=image, return_tensors="pt")
+            
+            # Get model prediction
+            with torch.no_grad():
+                outputs = model(**inputs)
+                probs = torch.nn.functional.softmax(outputs.logits, dim=1)
+                confidence = probs[0][0].item()  # Confidence score for urgent class
+            
+            # For prototype: Use confidence thresholds to determine urgency
+            is_urgent = confidence > 0.7
+            needs_comprehensive = confidence > 0.6
+            needs_field_test = confidence > 0.5
         
         return {
             'urgency': 'urgent' if is_urgent else 'routine',
             'appointment_type': 'comprehensive' if needs_comprehensive else 'standard',
             'field_test_required': needs_field_test,
             'confidence': confidence
+        }
+    except OSError as e:
+        print(f"TIFF/Image file error: {str(e)}")
+        if "truncated" in str(e).lower():
+            print("Error: Truncated or corrupted TIFF file")
+        elif "unknown" in str(e).lower():
+            print("Error: Unknown or unsupported TIFF compression")
+        else:
+            print("Error: General image file error")
+        # Default to urgent in case of errors for patient safety
+        return {
+            'urgency': 'urgent',
+            'appointment_type': 'comprehensive',
+            'field_test_required': True,
+            'confidence': None,
+            'error': str(e)
         }
     except Exception as e:
         print(f"Error analyzing image: {str(e)}")
@@ -87,7 +122,8 @@ def analyze_image(image_path):
             'urgency': 'urgent',
             'appointment_type': 'comprehensive',
             'field_test_required': True,
-            'confidence': None
+            'confidence': None,
+            'error': str(e)
         }
 
 @app.route('/')
