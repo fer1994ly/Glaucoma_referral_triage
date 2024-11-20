@@ -2,116 +2,189 @@ import os
 from PIL import Image
 import torch
 from datetime import datetime
-from pdf2image import convert_from_path
+
 import re
+import logging
+from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def process_vision_info(messages):
+    """Process vision information from messages"""
     image_inputs = []
     video_inputs = []
+    
     for message in messages:
-        if message["role"] != "user":
-            continue
         for content in message["content"]:
             if content["type"] == "image":
-                image_inputs.append(content["image"])
+                image = Image.open(content["image"]).convert("RGB")
+                image_inputs.append(image)
             elif content["type"] == "video":
                 video_inputs.append(content["video"])
-def convert_pdf_to_images(pdf_path):
-    """Convert PDF to list of PIL Images"""
-    try:
-        return convert_from_path(pdf_path)
-    except Exception as e:
-        print(f"Error converting PDF: {str(e)}")
-        return None
-
-def extract_numerical_values(text):
-    """Extract numerical values from text"""
-    pressure_pattern = r'(\d{2,3}(?:\.\d+)?)\s*(?:mm ?Hg|mmHg)'
-    cup_disc_pattern = r'(?:cup[\s-]*to[\s-]*disc|c/d|cd)\s*(?:ratio)?\s*(?:of)?\s*(\d+\.?\d*)'
     
-    pressure_matches = re.findall(pressure_pattern, text.lower())
-    cup_disc_matches = re.findall(cup_disc_pattern, text.lower())
-    
-    pressures = [float(p) for p in pressure_matches]
-    cup_disc = [float(cd) for cd in cup_disc_matches]
-    
-    return {
-        'max_pressure': max(pressures) if pressures else None,
-        'cup_disc_ratio': max(cup_disc) if cup_disc else None
-    }
     return image_inputs, video_inputs
 
-def analyze_referral(filepath, model, processor):
+
+
+def extract_numerical_values(analysis):
+    """Extract numerical values from analysis text"""
+    values = {
+        'max_pressure': None,
+        'cup_disc_ratio': None,
+        'field_damage_indicated': False
+    }
+    
+    # Extract IOP (pressure)
+    pressure_match = re.search(r'(\d+(?:\.\d+)?)\s*mm?Hg', analysis, re.IGNORECASE)
+    if pressure_match:
+        values['max_pressure'] = float(pressure_match.group(1))
+    
+    # Extract cup-to-disc ratio
+    ratio_match = re.search(r'(?:cup.?to.?disc|c/?d).?ratio.*?(\d+(?:\.\d+)?)', analysis, re.IGNORECASE)
+    if ratio_match:
+        values['cup_disc_ratio'] = float(ratio_match.group(1))
+    
+    # Check for field damage indicators
+    field_damage_terms = ['field defect', 'visual field loss', 'scotoma']
+    values['field_damage_indicated'] = any(term in analysis.lower() for term in field_damage_terms)
+    
+    return values
+
+def evaluate_urgency(values, analysis):
+    """Evaluate if the case is urgent based on values and analysis"""
+    # Check numerical values
+    max_pressure = values.get('max_pressure')
+    cup_disc_ratio = values.get('cup_disc_ratio')
+    
+    # Critical value thresholds
+    if max_pressure and max_pressure > 25:
+        return True
+    if cup_disc_ratio and cup_disc_ratio > 0.7:
+        return True
+    
+    # Check for concerning keywords in analysis
+    urgent_indicators = [
+        'severe', 'advanced', 'immediate', 'urgent',
+        'significant loss', 'marked damage', 'hemorrhage'
+    ]
+    return any(indicator in analysis.lower() for indicator in urgent_indicators)
+
+def evaluate_field_test_requirement(values, analysis):
+    """Evaluate if visual field testing is required"""
+    max_pressure = values.get('max_pressure')
+    cup_disc_ratio = values.get('cup_disc_ratio')
+    
+    # Criteria for requiring field test
+    if max_pressure and max_pressure > 21:
+        return True
+    if cup_disc_ratio and cup_disc_ratio > 0.6:
+        return True
+    
+    # Check for indicators in analysis
+    field_test_indicators = [
+        'visual field', 'field test', 'perimetry',
+        'scotoma', 'field loss', 'field defect'
+    ]
+    return any(indicator in analysis.lower() for indicator in field_test_indicators)
+
+def analyze_referral(filepath):
     """Analyze referral document using Qwen2-VL model for medical document analysis"""
     try:
-        image = Image.open(filepath).convert("RGB")
+        # Initialize Qwen2-VL model
+        model_id = "Qwen/Qwen2-VL-7B-Instruct"
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_id,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+        )
+        adapter_path = "sergiopaniego/qwen2-7b-instruct-trl-sft-ChartQA"
+        model.load_adapter(adapter_path)
+        processor = Qwen2VLProcessor.from_pretrained(model_id)
         
-        # Prepare the medical analysis prompt
-        prompt = """Analyze this medical eye exam image and provide details about:
-        1. Intraocular pressure (IOP) measurements in mmHg
-        2. Cup-to-disc ratio assessment
-        3. Visual field test results and any defects
-        4. Signs of glaucomatous damage
-        5. Overall assessment of glaucoma risk"""
-
-        # Process image and text for the model
+        # Open and process image
+        image = Image.open(filepath)
+        if image.format == 'TIFF':
+            # Handle TIFF-specific processing
+            if getattr(image, 'n_frames', 1) > 1:
+                logger.info(f"Multi-page TIFF detected with {image.n_frames} frames, using first frame")
+                image.seek(0)
+            
+            # Convert high bit-depth images
+            if image.mode in ['I;16', 'I']:
+                image = image.point(lambda i: i * (255/65535)).convert('L')
+        
+        image = image.convert("RGB")
+        
+        # Enhanced medical analysis prompt
+        prompt = """Analyze this ophthalmological image in detail and provide:
+        1. Precise intraocular pressure (IOP) measurements in mmHg if visible
+        2. Detailed cup-to-disc ratio assessment with specific values
+        3. Any visual field test abnormalities or defects
+        4. Specific signs of glaucomatous damage (disc hemorrhage, RNFL defects)
+        5. Evaluation of optic nerve head appearance
+        6. Assessment of retinal nerve fiber layer
+        7. Overall glaucoma risk assessment
+        Please provide numerical values where applicable and note any concerning findings."""
+        
+        # Process with Qwen2-VL
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": filepath},
+                {"type": "text", "text": prompt}
+            ]
+        }]
+        
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
         inputs = processor(
-            images=image,
-            text=prompt,
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
             return_tensors="pt"
         ).to("cuda" if torch.cuda.is_available() else "cpu")
         
+        # Generate analysis
         with torch.no_grad():
-            output_ids = model.generate(
-                pixel_values,
-                max_new_tokens=200,
-                num_beams=4,
-                no_repeat_ngram_size=3,
-                return_dict_in_generate=True
-            ).sequences
-            
-        description = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+            generated_ids = model.generate(**inputs, max_new_tokens=1024)
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            analysis = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )[0]
         
-        # Extract numerical values and indicators
-        values = extract_numerical_values(description)
-        max_pressure = values.get('max_pressure')
-        cup_disc_ratio = values.get('cup_disc_ratio')
+        # Extract values and determine urgency
+        values = extract_numerical_values(analysis)
+        is_urgent = evaluate_urgency(values, analysis)
         
-        # Check for field test damage indicators
-        field_damage_keywords = ['field defect', 'visual field loss', 'scotoma', 'field test abnormal']
-        field_damage_present = any(keyword in description.lower() for keyword in field_damage_keywords)
-        
-        # Updated urgency determination logic
-        is_urgent = (max_pressure is not None and max_pressure > 25 and 
-                    (cup_disc_ratio is not None and cup_disc_ratio > 0.7 or field_damage_present))
-        
-        # Determine if field test is required
-        field_test_required = (
-            field_damage_present or 
-            (cup_disc_ratio is not None and cup_disc_ratio > 0.6) or 
-            (max_pressure is not None and max_pressure > 21)
-        )
-        
-        result = {
+        return {
             'urgency': 'urgent' if is_urgent else 'routine',
             'appointment_type': 'comprehensive assessment' if is_urgent else 'standard assessment',
-            'field_test_required': field_test_required,
-            'metrics': {
-                'max_pressure': max_pressure,
-                'cup_disc_ratio': cup_disc_ratio,
-                'field_damage_indicated': field_damage_present
-            }
+            'field_test_required': evaluate_field_test_requirement(values, analysis),
+            'analysis': analysis,
+            'metrics': values
         }
-        
-        return result
-        
+    
     except Exception as e:
-        print(f"Error during analysis: {str(e)}")
-        # Default to urgent in case of errors
+        logger.error(f"Error during Qwen2-VL analysis: {str(e)}")
+        if isinstance(e, OSError):
+            if "compression" in str(e).lower():
+                raise OSError("Unsupported TIFF compression. Please use uncompressed or standard compression.")
+            elif "truncated" in str(e).lower():
+                raise OSError("Truncated or corrupted TIFF file detected.")
+        
+        # Default to urgent for safety
         return {
             'urgency': 'urgent',
             'appointment_type': 'comprehensive assessment',
             'field_test_required': True,
+            'error': str(e),
             'metrics': {
                 'max_pressure': None,
                 'cup_disc_ratio': None,
