@@ -32,6 +32,9 @@ waitForPort = 5000
 
 [deployment]
 run = ["sh", "-c", "python main.py"]
+deploymentTarget = "cloudrun"
+ignorePorts = false
+persistentStorage = ["/data", "/uploads", "/logs"]
 
 [[ports]]
 localPort = 5000

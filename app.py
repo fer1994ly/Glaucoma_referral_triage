@@ -13,9 +13,12 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True  # Handle truncated images gracefully
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY=os.environ.get('SECRET_KEY', 'development-key-only'),
-    SQLALCHEMY_DATABASE_URI=os.environ.get('DATABASE_URL', 'sqlite:///referrals.db'),
+    SQLALCHEMY_DATABASE_URI=os.environ.get('DATABASE_URL', 'sqlite:///data/referrals.db'),
     UPLOAD_FOLDER=os.path.join(os.getcwd(), 'uploads'),
-    MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB max file size
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,  # 16MB max file size
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=31),  # Add session lifetime
+    SESSION_COOKIE_SECURE=True,  # Secure cookies
+    SESSION_COOKIE_HTTPONLY=True  # HTTP-only cookies
 )
 # Configure logging
 logging.basicConfig(level=logging.INFO)

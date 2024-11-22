@@ -2,9 +2,9 @@ import os
 import signal
 import sys
 import logging
-from app import app  # Ensure app is imported from app.py
+from app import app
 from flask import jsonify
-import datetime  # Import datetime for timestamp
+import datetime
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -25,17 +25,30 @@ def health_check():
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
     logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+    # Don't exit immediately, let Flask handle the shutdown
     sys.exit(0)
 
 if __name__ == "__main__":
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
-        # Ensuring the server runs continuously without terminating unexpectedly
+        # Create persistent directories if they don't exist
+        os.makedirs('data', exist_ok=True)  # For database
+        os.makedirs('uploads', exist_ok=True)  # For uploaded files
+        os.makedirs('logs', exist_ok=True)  # For log files
+        
+        port = int(os.getenv('PORT', 5000))
+        
+        # Ensuring the server runs continuously
         app.run(
-            host='0.0.0.0',  # Allows all available network interfaces
-            port=5000,       # Default port for Flask
-            debug=False,     # Ensure debug mode is off for production
-            use_reloader=False  # Disable reloader for production
+            host='0.0.0.0',
+            port=port,
+            debug=False,
+            use_reloader=False,
+            threaded=True  # Enable threading for better request handling
         )
     except Exception as e:
         logger.error("Critical error during server startup:", exc_info=True)
-        sys.exit(1)  # Exit to indicate we'll not handle the exception further
+        sys.exit(1)
